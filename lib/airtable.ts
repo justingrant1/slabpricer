@@ -21,6 +21,54 @@ function base(): Airtable.Base {
   return _base;
 }
 
+/**
+ * Upload an attachment to a record using Airtable's content API (base64, up to 5MB per file).
+ * Returns true on success, false on failure (we log + swallow so a missing thumbnail
+ * never blocks the commit of the underlying row data).
+ *
+ * Docs: POST https://content.airtable.com/v0/{baseId}/{recordId}/{attachmentFieldIdOrName}/uploadAttachment
+ */
+async function uploadAttachmentFromDataUrl(
+  recordId: string,
+  fieldName: string,
+  dataUrl: string,
+  filename: string,
+): Promise<boolean> {
+  const m = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl);
+  if (!m) {
+    console.warn(`[airtable] uploadAttachment: not a base64 data URL (field=${fieldName})`);
+    return false;
+  }
+  const contentType = m[1];
+  const file = m[2]; // already base64
+  try {
+    const res = await fetch(
+      `https://content.airtable.com/v0/${env.AIRTABLE_BASE_ID}/${recordId}/${encodeURIComponent(
+        fieldName,
+      )}/uploadAttachment`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.AIRTABLE_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ contentType, file, filename }),
+      },
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.warn(
+        `[airtable] uploadAttachment failed (${res.status}) field=${fieldName}: ${body.slice(0, 300)}`,
+      );
+      return false;
+    }
+    return true;
+  } catch (e: any) {
+    console.warn(`[airtable] uploadAttachment threw field=${fieldName}: ${e?.message ?? e}`);
+    return false;
+  }
+}
+
 // ---------- Field names — must match the table schema ----------
 
 export const SCAN_FIELDS = {
@@ -103,15 +151,19 @@ export async function commitScan(input: CommitInput): Promise<CommitResult> {
     0,
   );
 
-  // 1) Create Scan.
-  // We `as any` the payload here because Airtable's TS types want the *full*
-  // Attachment shape (id/size/type) even on writes — but the REST API only
-  // needs { url, filename } when uploading by URL, which is what we do.
+  // ---------------------------------------------------------------------------
+  // ATTACHMENTS NOTE
+  // Airtable's "attachments by URL" feature does NOT accept data: URLs — the
+  // upload servers must be able to fetch over HTTP. We have raw bytes only, so
+  // we create the records *without* attachment fields, then push thumbnails +
+  // photo via the dedicated content endpoint (base64, ≤5MB per file).
+  // ---------------------------------------------------------------------------
+
+  // 1) Create Scan (text fields only).
   const scanRecord = (await b(env.AIRTABLE_SCANS_TABLE).create([
     {
       fields: {
         [SCAN_FIELDS.Name]: `${new Date().toISOString().slice(0, 16).replace("T", " ")} — ${input.sourceDealer ?? "Scan"}`,
-        [SCAN_FIELDS.Photo]: [{ url: input.photoDataUrl, filename: input.scanSourceFilename }],
         [SCAN_FIELDS.ScannedAt]: new Date().toISOString(),
         [SCAN_FIELDS.Source]: input.sourceDealer ?? "",
         [SCAN_FIELDS.Status]: "Committed",
@@ -124,7 +176,7 @@ export async function commitScan(input: CommitInput): Promise<CommitResult> {
   ] as any)) as unknown as Array<{ id: string }>;
   const scanId = scanRecord[0].id;
 
-  // 2) Create Slabs (batched, max 10 per Airtable call). Same `as any` reason.
+  // 2) Create Slabs (batched, max 10 per Airtable call) — no Thumbnail field yet.
   const records: Array<{ fields: Record<string, any> }> = input.rows.map((r) => {
     const s = r.priced.slab;
     const p = r.priced.pricing;
@@ -132,12 +184,6 @@ export async function commitScan(input: CommitInput): Promise<CommitResult> {
       fields: {
         [SLAB_FIELDS.Name]: buildSlabName(r.priced),
         [SLAB_FIELDS.Scan]: [scanId],
-        [SLAB_FIELDS.Thumbnail]: [
-          {
-            url: r.thumbnailDataUrl,
-            filename: `slab-${s.index}.jpg`,
-          },
-        ],
         [SLAB_FIELDS.GradingService]: s.grading_service === "UNKNOWN" ? "" : s.grading_service,
         [SLAB_FIELDS.CertNumber]: s.cert_number ?? "",
         [SLAB_FIELDS.Year]: s.year ?? "",
@@ -177,6 +223,29 @@ export async function commitScan(input: CommitInput): Promise<CommitResult> {
     )) as unknown as Array<{ id: string }>;
     slabIds.push(...created.map((r) => r.id));
   }
+
+  // 3) Upload attachments. We do this AFTER the records exist so any per-file
+  // failure can be logged + skipped without losing the structured data.
+  // Photo first (small enough at vision-resize size), then thumbnails in parallel.
+  await uploadAttachmentFromDataUrl(
+    scanId,
+    SCAN_FIELDS.Photo,
+    input.photoDataUrl,
+    input.scanSourceFilename || "scan.jpg",
+  );
+
+  await Promise.all(
+    input.rows.map((r, i) => {
+      const recId = slabIds[i];
+      if (!recId) return Promise.resolve(false);
+      return uploadAttachmentFromDataUrl(
+        recId,
+        SLAB_FIELDS.Thumbnail,
+        r.thumbnailDataUrl,
+        `slab-${r.priced.slab.index}.jpg`,
+      );
+    }),
+  );
 
   return { scanRecordId: scanId, slabRecordIds: slabIds };
 }

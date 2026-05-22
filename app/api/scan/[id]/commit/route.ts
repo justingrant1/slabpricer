@@ -79,8 +79,13 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     deleteScan(params.id);
     return NextResponse.json(result);
   } catch (e: any) {
+    console.error("[commit] Airtable commit failed", e);
+    const detail =
+      typeof e === "object" && e
+        ? e.message ?? e.error ?? JSON.stringify(e)
+        : String(e);
     return NextResponse.json(
-      { error: `Airtable commit failed: ${e?.message ?? e}` },
+      { error: `Airtable commit failed: ${detail}` },
       { status: 502 },
     );
   }
