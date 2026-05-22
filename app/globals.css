@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: theme("colors.bg");
+  color: theme("colors.text");
+  font-family: theme("fontFamily.sans");
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-md border border-border bg-panel2 px-3 py-2 text-sm font-medium text-text hover:bg-panel transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+}
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed;
+}
+.btn-danger {
+  @apply inline-flex items-center justify-center gap-2 rounded-md bg-bad px-3 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity disabled:opacity-50;
+}
+.input,
+.select,
+.textarea {
+  @apply w-full rounded-md border border-border bg-panel px-3 py-2 text-sm text-text placeholder:text-muted focus:outline-none focus:border-accent;
+}
+.card {
+  @apply rounded-xl border border-border bg-panel p-4;
+}
+.badge {
+  @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+}
+.badge-good   { @apply bg-good/15 text-good; }
+.badge-bad    { @apply bg-bad/15 text-bad; }
+.badge-warn   { @apply bg-warn/15 text-warn; }
+.badge-muted  { @apply bg-panel2 text-muted; }
