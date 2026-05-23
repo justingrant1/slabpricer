@@ -1,12 +1,15 @@
-# Ben App — dealer-photo → CDN pricing
+# Ben App — dealer-photo + slab-in-hand → CDN pricing
 
 Ben gets a steady stream of group photos from other dealers — boards full of
 graded slabs (PCGS / NGC / ANACS / CAC) plus the occasional handwritten ask
-price. Today he types every coin into a spreadsheet, looks up bid/ask on
-[CDN Exchange / Greysheet](https://www.greysheet.com), and decides whether to
-buy.
+price. He also walks shows / shop visits where slabs come across the counter
+one at a time. Today he types every coin into a spreadsheet, looks up bid/ask
+on [CDN Exchange / Greysheet](https://www.greysheet.com), and decides whether
+to buy.
 
-This app collapses that flow to a few seconds:
+This app collapses both flows to a few seconds.
+
+**Flow A — Dealer photo (bulk):**
 
 1. **Upload** the dealer photo (drag/drop, paste from clipboard, or the
    phone-camera button).
@@ -16,7 +19,19 @@ This app collapses that flow to a few seconds:
    (CPG), plus PCGS / NGC / Blue Book.
 4. Ben gets one **editable review table** — he tweaks anything wrong,
    optionally pastes a GSID, sets Buy/Pass/Negotiate, then **Commit to
-   Airtable** for the system of record.
+   Airtable**.
+
+**Flow B — Slab in hand (single coin):**
+
+1. From the home page, switch to the **Slab in hand** tab.
+2. Either **scan the barcode** on the back of the slab with the device
+   camera (works for PCGS and NGC; uses native `BarcodeDetector` with a
+   `@zxing/browser` fallback) **or type the cert number** + select service.
+3. The app calls the **PCGS Public API** (`/coindetail/GetCoinFactsByCertNo`
+   or `/coindetail/GetCoinFactsByBarcode`), which returns PCGS#, grade,
+   designation, etc. — even for NGC slabs.
+4. We synthesize a 1-row "scan" from that payload, run it through the same
+   CDN pricing path, and drop Ben on the same review/commit page.
 
 Stack:
 
@@ -24,6 +39,8 @@ Stack:
 - OpenAI `gpt-4o` (vision) with structured JSON output
 - `sharp` for in-process slab cropping
 - CDN Exchange API v2 (typed wrapper in `lib/cdn.ts`)
+- PCGS Public API v3 (typed wrapper in `lib/pcgs.ts`)
+- `@zxing/browser` + native `BarcodeDetector` for in-browser slab scanning
 - Airtable as the persistent store + Ben's data UI
 - Single-password auth (Ben is the only user) via signed cookie
 

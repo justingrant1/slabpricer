@@ -10,6 +10,8 @@
     "smoke:cdn": "tsx scripts/cdn-smoke.ts"
   },
   "dependencies": {
+    "@zxing/browser": "^0.1.5",
+    "@zxing/library": "^0.21.3",
     "airtable": "^0.12.2",
     "dotenv": "^16.4.5",
     "class-variance-authority": "^0.7.0",

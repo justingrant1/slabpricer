@@ -32,6 +32,12 @@ export const env = {
     return required("CDN_API_TOKEN");
   },
 
+  // PCGS Public API
+  PCGS_API_BASE_URL: optional("PCGS_API_BASE_URL", "https://api.pcgs.com/publicapi"),
+  get PCGS_API_TOKEN() {
+    return required("PCGS_API_TOKEN");
+  },
+
   // Airtable
   get AIRTABLE_TOKEN() {
     return required("AIRTABLE_TOKEN");
