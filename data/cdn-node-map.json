@@ -1,0 +1,156 @@
+[
+  {
+    "series": "Lincoln Cent (Wheat)",
+    "aliases": ["1c", "lincoln cent", "lincoln wheat cent", "wheat cent", "wheat penny", "1 cent"],
+    "nodeId": 8,
+    "yearMin": 1909,
+    "yearMax": 1958
+  },
+  {
+    "series": "Lincoln Cent (Memorial / Shield)",
+    "aliases": ["1c", "lincoln cent", "lincoln memorial cent", "memorial cent", "lincoln shield cent"],
+    "nodeId": 9,
+    "yearMin": 1959,
+    "yearMax": 2099
+  },
+  {
+    "series": "Indian Head Cent",
+    "aliases": ["1c", "indian head cent", "indian cent"],
+    "nodeId": 7,
+    "yearMin": 1859,
+    "yearMax": 1909
+  },
+  {
+    "series": "Jefferson Nickel",
+    "aliases": ["5c", "jefferson nickel", "nickel", "5 cents"],
+    "nodeId": 13,
+    "yearMin": 1938,
+    "yearMax": 2099
+  },
+  {
+    "series": "Buffalo Nickel",
+    "aliases": ["5c", "buffalo nickel", "indian head nickel"],
+    "nodeId": 12,
+    "yearMin": 1913,
+    "yearMax": 1938
+  },
+  {
+    "series": "Mercury Dime",
+    "aliases": ["10c", "mercury dime", "winged liberty dime"],
+    "nodeId": 17,
+    "yearMin": 1916,
+    "yearMax": 1945
+  },
+  {
+    "series": "Roosevelt Dime",
+    "aliases": ["10c", "roosevelt dime", "dime"],
+    "nodeId": 18,
+    "yearMin": 1946,
+    "yearMax": 2099
+  },
+  {
+    "series": "Washington Quarter",
+    "aliases": ["25c", "washington quarter", "quarter", "quarter dollar"],
+    "nodeId": 24,
+    "yearMin": 1932,
+    "yearMax": 2099
+  },
+  {
+    "series": "Walking Liberty Half Dollar",
+    "aliases": ["50c", "walking liberty half dollar", "walking liberty half", "wlh"],
+    "nodeId": 30,
+    "yearMin": 1916,
+    "yearMax": 1947
+  },
+  {
+    "series": "Franklin Half Dollar",
+    "aliases": ["50c", "franklin half dollar", "franklin half"],
+    "nodeId": 31,
+    "yearMin": 1948,
+    "yearMax": 1963
+  },
+  {
+    "series": "Kennedy Half Dollar",
+    "aliases": ["50c", "kennedy half dollar", "kennedy half"],
+    "nodeId": 32,
+    "yearMin": 1964,
+    "yearMax": 2099
+  },
+  {
+    "series": "Morgan Dollar",
+    "aliases": ["$1", "1$", "morgan dollar", "morgan", "silver dollar morgan"],
+    "nodeId": 36,
+    "yearMin": 1878,
+    "yearMax": 1921
+  },
+  {
+    "series": "Peace Dollar",
+    "aliases": ["$1", "1$", "peace dollar", "peace"],
+    "nodeId": 37,
+    "yearMin": 1921,
+    "yearMax": 1935
+  },
+  {
+    "series": "Eisenhower Dollar",
+    "aliases": ["$1", "1$", "eisenhower dollar", "ike dollar"],
+    "nodeId": 39,
+    "yearMin": 1971,
+    "yearMax": 1978
+  },
+  {
+    "series": "Gold Dollar",
+    "aliases": ["g$1", "$1 gold", "gold dollar", "1 dollar gold"],
+    "nodeId": 50,
+    "yearMin": 1849,
+    "yearMax": 1889
+  },
+  {
+    "series": "Quarter Eagle ($2.50 Gold)",
+    "aliases": ["g$2.5", "$2.50", "quarter eagle", "2.5 dollar gold"],
+    "nodeId": 51,
+    "yearMin": 1796,
+    "yearMax": 1929
+  },
+  {
+    "series": "Three Dollar Gold",
+    "aliases": ["g$3", "$3", "three dollar gold", "3 dollar gold"],
+    "nodeId": 52,
+    "yearMin": 1854,
+    "yearMax": 1889
+  },
+  {
+    "series": "Half Eagle ($5 Gold)",
+    "aliases": ["g$5", "$5", "half eagle", "5 dollar gold"],
+    "nodeId": 53,
+    "yearMin": 1795,
+    "yearMax": 1929
+  },
+  {
+    "series": "Eagle ($10 Gold)",
+    "aliases": ["g$10", "$10", "eagle", "10 dollar gold"],
+    "nodeId": 54,
+    "yearMin": 1795,
+    "yearMax": 1933
+  },
+  {
+    "series": "Double Eagle ($20 Gold)",
+    "aliases": ["g$20", "$20", "double eagle", "saint gaudens", "saint", "liberty head double eagle", "20 dollar gold"],
+    "nodeId": 55,
+    "yearMin": 1849,
+    "yearMax": 1933
+  },
+  {
+    "series": "American Silver Eagle",
+    "aliases": ["ase", "american silver eagle", "silver eagle"],
+    "nodeId": 100,
+    "yearMin": 1986,
+    "yearMax": 2099
+  },
+  {
+    "series": "American Gold Eagle",
+    "aliases": ["age", "american gold eagle", "gold eagle"],
+    "nodeId": 101,
+    "yearMin": 1986,
+    "yearMax": 2099
+  }
+]

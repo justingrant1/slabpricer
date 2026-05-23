@@ -322,11 +322,23 @@ function SlabCard({
           {p?.name && (
             <div className="text-xs text-muted truncate" title={p.name}>{p.name}</div>
           )}
+          {p?.approximateGrade && (
+            <div
+              className="text-xs text-warn"
+              title={`No published wholesale data at grade ${p.requestedGrade}. Showing nearest available: ${p.gradeLabel}.`}
+            >
+              ≈ approximate — nearest published grade is {p.gradeLabel}
+            </div>
+          )}
+          {row.priced.resolvedVia === "catalog-walk" && (
+            <div className="text-xs text-muted">Matched via CDN catalog walk</div>
+          )}
           {row.priced.errorMessage && (
             <div className="text-xs text-bad">{row.priced.errorMessage}</div>
           )}
         </div>
       </div>
+
 
       {/* Coin attributes */}
       <div className="grid grid-cols-6 gap-2">
@@ -465,13 +477,24 @@ function SlabCard({
           />
         </Field>
         <Field label="Manual GSID" className="col-span-2">
-          <input
-            className="input"
-            inputMode="numeric"
-            value={row.gsidOverride}
-            onChange={(e) => patch({ gsidOverride: e.target.value })}
-            placeholder="from greysheet.com"
-          />
+          <div className="flex gap-1">
+            <input
+              className="input flex-1"
+              inputMode="numeric"
+              value={row.gsidOverride}
+              onChange={(e) => patch({ gsidOverride: e.target.value })}
+              placeholder="paste from greysheet"
+            />
+            <a
+              href={greysheetSearchUrl(s)}
+              target="_blank"
+              rel="noreferrer"
+              className="btn !px-2"
+              title="Open greysheet.com search in a new tab"
+            >
+              🔍
+            </a>
+          </div>
         </Field>
         <div className="col-span-2 flex justify-end">
           <button
@@ -484,6 +507,7 @@ function SlabCard({
           </button>
         </div>
       </div>
+
 
       <div className="grid grid-cols-2 gap-2">
         <Field label="Your final offer ($)">
@@ -551,7 +575,18 @@ function ConfidenceDot({ c }: { c: number }) {
   return <span title={`Vision confidence ${(c * 100).toFixed(0)}%`} className={`inline-block w-2 h-2 rounded-full ${cls}`} />;
 }
 
+/**
+ * Build a Greysheet.com search URL from the current slab data so Ben can
+ * one-click open a tab, find the right coin, and copy its Gsid back in.
+ */
+function greysheetSearchUrl(s: ExtractedSlab): string {
+  const parts = [s.year, s.mint_mark, s.denomination, s.variety].filter(Boolean);
+  const q = parts.join(" ").trim();
+  return `https://www.greysheet.com/search?q=${encodeURIComponent(q || "coin")}`;
+}
+
 function StatusBadge({ status }: { status: PricedSlab["status"] }) {
+
   switch (status) {
     case "priced":
       return <span className="badge badge-good">Priced</span>;

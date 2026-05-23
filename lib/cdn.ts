@@ -250,6 +250,14 @@ export interface SlabPricingSummary {
   pcgs: number | null;
   ngc: number | null;
   blueBook: number | null;
+  /**
+   * True when we couldn't find pricing at the requested grade and fell back to
+   * the nearest published grade. UI surfaces this so Ben knows the quote is
+   * approximate.
+   */
+  approximateGrade: boolean;
+  /** The grade we ASKED for (in case it differs from `grade`). */
+  requestedGrade: number;
   rawCdn: CdnPricingItem | null;
 }
 
@@ -260,6 +268,25 @@ export function summarisePricing(
 ): SlabPricingSummary | null {
   const row = pickPricingForGrade(item, grade, cac);
   if (!row) {
+    // Last-ditch: scan PricingData for the closest published grade.
+    const nearest = nearestPublishedGrade(item, grade, cac);
+    if (nearest) {
+      return {
+        gsid: item.GsId ?? null,
+        name: item.Name,
+        grade: nearest.Grade,
+        gradeLabel: nearest.GradeLabel,
+        isCac: nearest.IsCac,
+        bid: parseCdnPrice(nearest.GreyVal),
+        ask: parseCdnPrice(nearest.CpgVal),
+        pcgs: parseCdnPrice(nearest.PcgsVal),
+        ngc: parseCdnPrice(nearest.NgcVal),
+        blueBook: parseCdnPrice(nearest.BlueBookVal),
+        approximateGrade: nearest.Grade !== grade,
+        requestedGrade: grade,
+        rawCdn: item,
+      };
+    }
     return {
       gsid: item.GsId ?? null,
       name: item.Name,
@@ -271,6 +298,8 @@ export function summarisePricing(
       pcgs: null,
       ngc: null,
       blueBook: null,
+      approximateGrade: false,
+      requestedGrade: grade,
       rawCdn: item,
     };
   }
@@ -285,8 +314,49 @@ export function summarisePricing(
     pcgs: parseCdnPrice(row.PcgsVal),
     ngc: parseCdnPrice(row.NgcVal),
     blueBook: parseCdnPrice(row.BlueBookVal),
+    approximateGrade: false,
+    requestedGrade: grade,
     rawCdn: item,
   };
 }
 
+/**
+ * Find the published-grade row in `PricingData` whose Grade is closest to the
+ * requested grade. Used as a fallback when the exact grade has no row (common
+ * on high-end old gold where CDN only publishes up through MS65 etc.).
+ *
+ * Honours the CAC preference — if cac=true we look at CAC rows first, then
+ * fall back to non-CAC rows.
+ */
+export function nearestPublishedGrade(
+  item: CdnPricingItem,
+  grade: number,
+  cac: boolean,
+): CdnPricingData | null {
+  if (!item?.PricingData?.length) return null;
+  const candidates = item.PricingData.filter(
+    (r) =>
+      // a row counts as "real" if at least one of the relevant prices is set
+      r.Grade > 0 &&
+      (parseCdnPrice(r.GreyVal) != null ||
+        parseCdnPrice(r.CpgVal) != null ||
+        parseCdnPrice(r.PcgsVal) != null),
+  );
+  if (!candidates.length) return null;
+  const pool = cac ? candidates.filter((r) => r.IsCac) : candidates.filter((r) => !r.IsCac);
+  const search = pool.length ? pool : candidates;
+  let best: CdnPricingData | null = null;
+  let bestDist = Infinity;
+  for (const r of search) {
+    const d = Math.abs(r.Grade - grade);
+    if (d < bestDist) {
+      bestDist = d;
+      best = r;
+    }
+  }
+  return best;
+}
+
 export { CdnError };
+
+
