@@ -4,6 +4,95 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 /**
+ * Vercel serverless functions have a hard 4.5MB request body limit.
+ * Modern phone photos are routinely 6–15MB, so we re-encode every upload
+ * client-side to a JPEG with longest edge ≤ MAX_EDGE before sending.
+ *
+ * We try progressively lower quality settings if we still exceed BYTE_LIMIT.
+ * (We never drop below 1600px on the long edge — the server-side vision
+ * pipeline still wants enough resolution to read fine label text on a tray
+ * of 10+ slabs.)
+ */
+const MAX_EDGE = 3200;
+const MIN_EDGE = 1600;
+const BYTE_LIMIT = 4_000_000; // 4 MB, comfortably under Vercel's 4.5 MB
+const QUALITIES = [0.88, 0.82, 0.75, 0.65];
+
+async function compressImage(file: File): Promise<File> {
+  // If it's already small enough and a JPEG/PNG/WebP, leave it alone.
+  if (file.size <= BYTE_LIMIT && /^image\/(jpeg|png|webp)$/.test(file.type)) {
+    return file;
+  }
+
+  const bitmap = await loadBitmap(file);
+  for (const edge of [MAX_EDGE, 2400, MIN_EDGE]) {
+    const { canvas } = drawToCanvas(bitmap, edge);
+    for (const q of QUALITIES) {
+      const blob = await canvasToJpegBlob(canvas, q);
+      if (blob.size <= BYTE_LIMIT) {
+        return new File([blob], renameToJpg(file.name), { type: "image/jpeg" });
+      }
+    }
+  }
+  // Last resort — return what we got at the smallest edge / quality.
+  const { canvas } = drawToCanvas(bitmap, MIN_EDGE);
+  const blob = await canvasToJpegBlob(canvas, QUALITIES[QUALITIES.length - 1]);
+  return new File([blob], renameToJpg(file.name), { type: "image/jpeg" });
+}
+
+async function loadBitmap(file: File): Promise<ImageBitmap | HTMLImageElement> {
+  if (typeof createImageBitmap === "function") {
+    try {
+      return await createImageBitmap(file);
+    } catch {
+      // fall through to <img> fallback (e.g. for HEIC on some browsers)
+    }
+  }
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Could not decode image"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+function drawToCanvas(
+  source: ImageBitmap | HTMLImageElement,
+  maxEdge: number,
+): { canvas: HTMLCanvasElement; w: number; h: number } {
+  const srcW = "width" in source ? source.width : (source as HTMLImageElement).naturalWidth;
+  const srcH = "height" in source ? source.height : (source as HTMLImageElement).naturalHeight;
+  const scale = Math.min(1, maxEdge / Math.max(srcW, srcH));
+  const w = Math.max(1, Math.round(srcW * scale));
+  const h = Math.max(1, Math.round(srcH * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) throw new Error("No 2D canvas context");
+  // White background in case the source has transparency.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(source as CanvasImageSource, 0, 0, w, h);
+  return { canvas, w, h };
+}
+
+function canvasToJpegBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("toBlob returned null"))),
+      "image/jpeg",
+      quality,
+    );
+  });
+}
+
+function renameToJpg(name: string): string {
+  return name.replace(/\.[a-z0-9]+$/i, "") + ".jpg";
+}
+
+
+/**
  * Image intake card.
  *
  * Supports:
@@ -67,21 +156,50 @@ export default function UploadCard() {
     };
   }, [preview]);
 
+  const [stage, setStage] = useState<"compressing" | "uploading" | null>(null);
+
   async function onAnalyze() {
     if (!file) return;
     setBusy(true);
     setError(null);
     try {
+      // 1. Compress client-side to stay under Vercel's 4.5MB body limit.
+      setStage("compressing");
+      let upload = file;
+      try {
+        upload = await compressImage(file);
+      } catch (e) {
+        console.warn("[upload] compression failed, sending original:", e);
+      }
+
+      // 2. POST to /api/scan. We need to handle non-JSON error bodies too
+      //    (Vercel returns a plain "Request Entity Too Large" string on 413).
+      setStage("uploading");
       const fd = new FormData();
-      fd.append("file", file);
+      fd.append("file", upload);
       if (source.trim()) fd.append("source", source.trim());
       const res = await fetch("/api/scan", { method: "POST", body: fd });
+
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = text || `HTTP ${res.status}`;
+        try {
+          msg = JSON.parse(text).error ?? msg;
+        } catch {
+          // not JSON — keep raw text
+        }
+        if (res.status === 413) {
+          msg = "Image is too large even after compression. Try a smaller photo.";
+        }
+        throw new Error(msg);
+      }
+
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
       router.push(`/scan/${json.id}`);
     } catch (e: any) {
       setError(e?.message ?? "Upload failed");
       setBusy(false);
+      setStage(null);
     }
   }
 
@@ -162,7 +280,11 @@ export default function UploadCard() {
           disabled={busy}
         />
         <button className="btn-primary" disabled={!file || busy} onClick={onAnalyze}>
-          {busy ? "Analyzing… (10–30s)" : "Analyze slabs →"}
+          {busy
+            ? stage === "compressing"
+              ? "Compressing image…"
+              : "Analyzing… (10–30s)"
+            : "Analyze slabs →"}
         </button>
       </div>
 
