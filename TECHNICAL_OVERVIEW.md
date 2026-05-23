@@ -80,10 +80,11 @@ A single-tenant Next.js 14 web app, deployed on Vercel, that:
    (FormData,    │  multipart upload │
     JPEG ≤4MB)   └────────┬─────────┘
                           │
-                ┌─────────▼──────────┐
-                │  sharp resize       │  → 1600px detector image (data URL)
-                │  + full-res Buffer  │
-                └─────────┬──────────┘
+                 ┌─────────▼──────────┐
+                 │  sharp resize       │  → 2048px detector image (data URL)
+                 │  + full-res Buffer  │
+                 └─────────┬──────────┘
+
                           │
                 ┌─────────▼──────────┐
    Anthropic ◄──┤ Pass 1: detector   │ ── tool_use(report_slabs) ─► boxes[]
@@ -177,14 +178,28 @@ two slabs, or hallucinate fields.
 **Current implementation (`lib/vision.ts`) — two-pass Claude Sonnet 4.6:**
 
 ### Pass 1 — Detector
-- Single API call with the **whole-tray photo** downsized to 1600px on
-  the long edge.
-- Strict tool-use: a `report_slabs` tool whose JSON schema accepts an
-  array of `{index, crop_box: [x, y, w, h], label_confidence}` plus
-  `global_notes`.
+- Single API call with the **whole-tray photo** downsized to **2048px**
+  on the long edge. (Bumped from 1600px in March '26 — the older
+  resolution was the dominant cause of the detector merging two
+  adjacent slabs into one box on dense 10+ slab trays.)
+- Strict tool-use: a `report_slabs` tool whose JSON schema requires
+  a `slab_count` integer **plus** an array of
+  `{index, crop_box: [x, y, w, h], label_confidence}` and an optional
+  `global_notes`. The schema is deliberately count-first: the system
+  prompt forces Claude to count every slab and set `slab_count` before
+  emitting boxes, with explicit "do not merge adjacent slabs" and
+  "sweep every row" rules. Empirically this is the single biggest
+  reliability win at high slab counts — without the count commitment,
+  the model will silently stop listing boxes one row short.
+- If the returned `slab_count` doesn't equal the number of boxes
+  actually returned, we prepend a `⚠️ Detector reported N but only
+  returned M…` warning to `global_notes` so Ben sees a "check the
+  source image" nudge in the review UI. `boxes.length` remains
+  authoritative for downstream.
 - Crop boxes are 0..1 fractions of the original image; we re-number
   the indices server-side to guarantee a clean 1..N reading order.
 - Tiny boxes (<2% of image) are dropped as noise.
+
 
 ### Pass 2 — Per-slab extractor
 - For each detected box, **sharp** crops the **original full-resolution
@@ -509,7 +524,18 @@ no longer used by the active code path.
 
 ## 13. Changelog (recent notable changes)
 
+- **Count-first detector + 2048px tray image** (`lib/vision.ts`,
+  `lib/imageCrop.ts`). The Pass 1 detector now (a) sees the tray at
+  2048px on the long edge instead of 1600px and (b) is forced to set a
+  required `slab_count` integer in its tool call before listing boxes.
+  Fixes a class of 10+ slab dealer photos where the model was
+  silently merging adjacent slabs or stopping a row short. When the
+  reported count and returned box count disagree, a "⚠️ Detector
+  reported N but only returned M…" warning is prepended to
+  `global_notes` so Ben sees a "check the source image" nudge in the
+  review UI.
 - **Catalog-walk Gsid fallback** (`lib/cdnCatalog.ts`,
+
   `data/cdn-node-map.json`). Dealer-photo slabs without a PCGS coin
   number on the label (most NGC / ANACS / ICG holders) now auto-
   resolve to a Greysheet Gsid by scoring candidates under a curated
