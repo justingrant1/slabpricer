@@ -91,6 +91,9 @@ function ScanPane(props: {
   const [running, setRunning] = useState(false);
   const [hint, setHint] = useState<string>("Tap Start to use the camera.");
   const [lastCode, setLastCode] = useState<string | null>(null);
+  const [torchAvailable, setTorchAvailable] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
+  const trackRef = useRef<MediaStreamTrack | null>(null);
 
   // Stop any running streams / scanners on unmount.
   const stopFnRef = useRef<(() => void) | null>(null);
@@ -100,6 +103,40 @@ function ScanPane(props: {
     };
   }, []);
 
+  /**
+   * Some Android Chrome builds expose a `zoom` constraint on the
+   * MediaStreamTrack that DRAMATICALLY improves small-barcode reads.
+   * Bumping zoom to ~2x is usually the difference between "no read" and
+   * "instant lock" on a slab barcode held 6–8 inches away.
+   */
+  async function maybeBoostZoom(track: MediaStreamTrack) {
+    try {
+      const caps = (track.getCapabilities?.() ?? {}) as any;
+      if (typeof caps.zoom?.min === "number" && typeof caps.zoom?.max === "number") {
+        const target = Math.min(caps.zoom.max, Math.max(caps.zoom.min, 2.0));
+        await track.applyConstraints({ advanced: [{ zoom: target } as any] });
+      }
+      // Also try to lock focus to continuous if supported.
+      if (Array.isArray(caps.focusMode) && caps.focusMode.includes("continuous")) {
+        await track.applyConstraints({ advanced: [{ focusMode: "continuous" } as any] });
+      }
+    } catch {
+      /* not all browsers support these; ignore */
+    }
+  }
+
+  async function toggleTorch() {
+    const track = trackRef.current;
+    if (!track) return;
+    try {
+      const next = !torchOn;
+      await track.applyConstraints({ advanced: [{ torch: next } as any] });
+      setTorchOn(next);
+    } catch {
+      setTorchAvailable(false);
+    }
+  }
+
   async function start() {
     props.setError(null);
     setLastCode(null);
@@ -107,14 +144,33 @@ function ScanPane(props: {
     setHint("Requesting camera…");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
         audio: false,
       });
       const video = videoRef.current;
-      if (!video) return;
+      if (!video) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      const track = stream.getVideoTracks()[0];
+      trackRef.current = track ?? null;
+      if (track) {
+        const caps = (track.getCapabilities?.() ?? {}) as any;
+        setTorchAvailable(Boolean(caps.torch));
+        await maybeBoostZoom(track);
+      }
+
       video.srcObject = stream;
-      await video.play();
-      setHint("Aim the camera at the barcode on the slab back.");
+      video.setAttribute("playsinline", "true");
+      video.muted = true;
+      await video.play().catch(() => {
+        /* iOS sometimes resolves play() late; ignore */
+      });
+      setHint("Aim at the barcode. Hold steady ~6 inches away.");
 
       const onDecoded = async (text: string) => {
         if (!text) return;
@@ -123,53 +179,112 @@ function ScanPane(props: {
         await submitBarcode(text);
       };
 
-      // Prefer the native BarcodeDetector if present.
+      // ----------------------------------------------------------------
+      // Decoder selection.
+      //
+      // Path A (preferred): the browser's built-in BarcodeDetector. Native
+      //   code, ~10x faster than zxing-js, supports every format PCGS/NGC use.
+      //   Available on iOS 17+ Safari, recent Chrome desktop, Chrome Android.
+      //
+      // Path B (fallback): @zxing/browser. We DO NOT call
+      //   `decodeFromVideoElement` because that helper re-opens the camera
+      //   with its own getUserMedia — which on iOS Safari either steals the
+      //   stream we already have or silently fails. Instead we hand zxing the
+      //   <video> element we already attached the stream to and pump frames
+      //   ourselves via decodeOnceFromVideoElement in a loop.
+      // ----------------------------------------------------------------
       const NativeBD: any = (window as any).BarcodeDetector;
       if (NativeBD && typeof NativeBD === "function") {
-        const detector = new NativeBD({
-          formats: ["code_128", "code_39", "ean_13", "ean_8", "qr_code", "data_matrix", "pdf417", "upc_a", "upc_e", "itf"],
-        });
+        let supportedFormats: string[] | undefined;
+        try {
+          supportedFormats = await NativeBD.getSupportedFormats?.();
+        } catch {
+          /* not all impls expose this */
+        }
+        const wanted = [
+          "code_128",
+          "code_39",
+          "code_93",
+          "ean_13",
+          "ean_8",
+          "qr_code",
+          "data_matrix",
+          "pdf417",
+          "upc_a",
+          "upc_e",
+          "itf",
+        ];
+        const formats = supportedFormats?.length
+          ? wanted.filter((f) => supportedFormats!.includes(f))
+          : wanted;
+
+        const detector = new NativeBD({ formats });
         let cancelled = false;
         const loop = async () => {
           if (cancelled) return;
           try {
-            const results = await detector.detect(video);
-            if (results?.length) {
-              const value = results[0].rawValue ?? results[0].rawData ?? "";
-              if (value) {
-                cancelled = true;
-                onDecoded(String(value));
-                return;
+            // detect() can throw "InvalidStateError" if the video isn't ready yet.
+            if (video.readyState >= 2) {
+              const results = await detector.detect(video);
+              if (results?.length) {
+                const value = results[0].rawValue ?? results[0].rawData ?? "";
+                if (value) {
+                  cancelled = true;
+                  onDecoded(String(value));
+                  return;
+                }
               }
             }
           } catch {
             /* swallow per-frame errors */
           }
-          requestAnimationFrame(loop);
+          if (!cancelled) requestAnimationFrame(loop);
         };
         loop();
         stopFnRef.current = () => {
           cancelled = true;
           stream.getTracks().forEach((t) => t.stop());
+          trackRef.current = null;
+          setTorchOn(false);
+          setTorchAvailable(false);
           setRunning(false);
         };
       } else {
-        // Fallback: dynamic import of zxing-browser (smaller initial bundle).
-        const { BrowserMultiFormatReader } = await import("@zxing/browser");
-        const reader = new BrowserMultiFormatReader();
-        let stopped = false;
-        const controls = await reader.decodeFromVideoElement(video, (result, _err, c) => {
-          if (stopped) return;
-          if (result) {
-            stopped = true;
-            c?.stop();
-            onDecoded(result.getText());
+        // Path B: zxing fallback. Pump frames manually from our existing <video>.
+        const zxing = await import("@zxing/browser");
+        const { BrowserMultiFormatReader } = zxing;
+        const reader = new BrowserMultiFormatReader(undefined, {
+          delayBetweenScanAttempts: 100,
+        } as any);
+        let cancelled = false;
+
+        const tick = async () => {
+          if (cancelled) return;
+          try {
+            if (video.readyState >= 2) {
+              // `decodeOnceFromVideoElement` reads exactly one frame and
+              // resolves/throws. Throwing NotFoundException just means "no
+              // barcode this frame" — we ignore and keep ticking.
+              const result = await reader.decodeOnceFromVideoElement(video);
+              if (result) {
+                cancelled = true;
+                onDecoded(result.getText());
+                return;
+              }
+            }
+          } catch {
+            /* NotFoundException etc. — try again */
           }
-        });
+          if (!cancelled) requestAnimationFrame(tick);
+        };
+        tick();
+
         stopFnRef.current = () => {
-          stopped = true;
-          controls.stop();
+          cancelled = true;
           stream.getTracks().forEach((t) => t.stop());
+          trackRef.current = null;
+          setTorchOn(false);
+          setTorchAvailable(false);
           setRunning(false);
         };
       }
@@ -199,6 +314,11 @@ function ScanPane(props: {
     }
   }
 
+  function stop() {
+    stopFnRef.current?.();
+    setHint("Stopped. Tap Start to scan again.");
+  }
+
   return (
     <div className="space-y-3">
       <div className="relative aspect-[4/3] w-full overflow-hidden rounded-md bg-black border border-border">
@@ -225,6 +345,35 @@ function ScanPane(props: {
               className="px-4 py-2 rounded-md bg-accent text-accent-fg font-medium hover:bg-accent/90 disabled:opacity-50"
             >
               Start camera
+            </button>
+          </div>
+        )}
+
+        {/* Floating controls while the camera is live. */}
+        {running && (
+          <div className="absolute top-2 right-2 flex gap-2">
+            {torchAvailable && (
+              <button
+                type="button"
+                onClick={toggleTorch}
+                className={cn(
+                  "rounded-md px-2.5 py-1 text-xs font-medium border",
+                  torchOn
+                    ? "bg-amber-400/90 text-black border-amber-300"
+                    : "bg-black/60 text-white border-white/30 hover:bg-black/80",
+                )}
+                title={torchOn ? "Turn flashlight off" : "Turn flashlight on"}
+              >
+                {torchOn ? "🔦 On" : "🔦"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={stop}
+              className="rounded-md px-2.5 py-1 text-xs font-medium border bg-black/60 text-white border-white/30 hover:bg-black/80"
+              title="Stop camera"
+            >
+              ✕
             </button>
           </div>
         )}

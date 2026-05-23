@@ -1,10 +1,10 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { ExtractedSlab, GradingService, VisionResult } from "@/lib/vision";
-import type { PricedSlab } from "@/lib/lookup";
+import type { AuctionComp, PricedSlab } from "@/lib/lookup";
 
 /**
  * The big editable review screen.
@@ -266,11 +266,33 @@ export default function ReviewClient({
   );
 }
 
-/** Default decision based on the spread (if any). */
-function defaultDecision(p: PricedSlab): Decision {
-  if (p.spreadPercent != null && p.spreadPercent <= 0) return "Buy";
-  if (p.spreadPercent != null && p.spreadPercent > 0.2) return "Pass";
+/**
+ * Default decision = always "Pending".
+ *
+ * Earlier versions auto-suggested Buy/Pass based on spread, but Ben asked us to
+ * keep the decision explicit. The spread is still color-coded in the UI, so the
+ * recommendation is visually obvious without overwriting his pick.
+ */
+function defaultDecision(_p: PricedSlab): Decision {
   return "Pending";
+}
+
+/**
+ * Build a short, dealer-friendly title for the slab — the same string we use
+ * for the Airtable "Name" column. Example: "1881-S Morgan $1 MS65 DMPL CAC (PCGS)".
+ */
+function composedTitle(s: ExtractedSlab): string {
+  const head: string[] = [];
+  if (s.year) head.push(s.year);
+  if (s.mint_mark) head[head.length - 1] = `${head[head.length - 1] ?? ""}-${s.mint_mark}`;
+  if (s.denomination) head.push(s.denomination);
+  if (s.grade_label) head.push(s.grade_label);
+  else if (s.grade_numeric != null) head.push(`MS${s.grade_numeric}`);
+  if (s.designation) head.push(s.designation);
+  if (s.variety) head.push(s.variety);
+  if (s.has_cac_sticker) head.push("CAC");
+  if (s.grading_service && s.grading_service !== "UNKNOWN") head.push(`(${s.grading_service})`);
+  return head.filter(Boolean).join(" ").trim() || `Slab ${s.index}`;
 }
 
 // ---------- Slab card ----------
@@ -295,19 +317,28 @@ function SlabCard({
   const p = row.priced.pricing;
   const dirty = Object.keys(row.edits).length > 0 || row.gsidOverride.trim().length > 0;
 
+  const title = composedTitle(s);
+  const thumbUrl = `/api/scan/${scanId}/thumb/${idx}`;
+
   return (
     <div className="card space-y-3">
       <div className="flex gap-3">
-        <img
-          src={`/api/scan/${scanId}/thumb/${idx}`}
-          alt={`slab ${idx}`}
-          className="rounded-md w-32 h-32 object-cover bg-panel2 border border-border shrink-0"
-        />
-        <div className="flex-1 min-w-0 space-y-2">
+        {/* Thumbnail: bigger (was w-32 h-32 → w-44 h-44), click for full-size modal. */}
+        <ZoomThumb src={thumbUrl} alt={`slab ${idx}`} title={title} />
+
+        <div className="flex-1 min-w-0 space-y-1.5">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-muted">Slab #{idx}</span>
+            <span className="text-xs text-muted">#{idx}</span>
             <StatusBadge status={row.priced.status} />
             <ConfidenceDot c={s.label_confidence} />
+            {row.priced.resolvedVia === "pcgs-cert" && (
+              <span
+                className="badge badge-good"
+                title="Resolved by PCGS cert # — most reliable mapping"
+              >
+                Cert
+              </span>
+            )}
             {p?.gsid != null && <span className="badge badge-muted">GSID {p.gsid}</span>}
             <select
               className="select !py-0.5 !px-1 !text-xs !w-auto ml-auto"
@@ -319,8 +350,16 @@ function SlabCard({
               ))}
             </select>
           </div>
-          {p?.name && (
-            <div className="text-xs text-muted truncate" title={p.name}>{p.name}</div>
+
+          {/* Composed, dealer-friendly title — same string we store in Airtable.Name. */}
+          <div className="text-base font-semibold leading-snug break-words" title={title}>
+            {title}
+          </div>
+
+          {p?.name && p.name !== title && (
+            <div className="text-xs text-muted truncate" title={p.name}>
+              CDN: {p.name}
+            </div>
           )}
           {p?.approximateGrade && (
             <div
@@ -528,8 +567,146 @@ function SlabCard({
           />
         </Field>
       </div>
+
+      {/* Recent auction comps from PCGS APR (only populated when we resolved
+          via cert#). Helps Ben sanity-check the CDN bid against what the same
+          coin actually sold for. */}
+      <AuctionComps auctions={row.priced.auctions} />
     </div>
   );
+}
+
+/**
+ * Thumbnail with click-to-zoom: shows a 176px tile in the card; on click,
+ * opens a full-viewport modal with the same image so Ben can read tiny text
+ * on the label without leaving the page. Esc / backdrop click closes it.
+ */
+function ZoomThumb({ src, alt, title }: { src: string; alt: string; title: string }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    // Lock body scroll while the modal is open so the page doesn't jump.
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="group relative rounded-md w-44 h-44 bg-panel2 border border-border shrink-0 overflow-hidden focus:outline-none focus:ring-2 focus:ring-accent"
+        title="Click to zoom"
+      >
+        <img src={src} alt={alt} className="w-full h-full object-cover" />
+        <span className="absolute bottom-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-bg/80 text-muted opacity-0 group-hover:opacity-100 transition pointer-events-none">
+          🔍 zoom
+        </span>
+      </button>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
+          onClick={() => setOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Slab image: ${title}`}
+        >
+          <img
+            src={src}
+            alt={alt}
+            className="max-w-[95vw] max-h-[95vh] object-contain rounded-lg shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            type="button"
+            className="absolute top-4 right-4 btn"
+            onClick={() => setOpen(false)}
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * Renders up to 6 recent auction comps from PCGS APR.
+ *
+ * - `null`/`undefined` → render nothing (we didn't have a cert# to look up)
+ * - `[]`               → small "No comps" line
+ * - otherwise          → compact table with date / house / lot / price / CAC
+ */
+function AuctionComps({ auctions }: { auctions: AuctionComp[] | null | undefined }) {
+  if (auctions == null) return null;
+  if (auctions.length === 0) {
+    return (
+      <details className="text-xs">
+        <summary className="cursor-pointer text-muted">Auction comps (PCGS APR)</summary>
+        <div className="text-xs text-muted mt-1">No public auction sales on file.</div>
+      </details>
+    );
+  }
+  const top = auctions.slice(0, 6);
+  return (
+    <details className="text-xs" open={top.length > 0 && top.length <= 3}>
+      <summary className="cursor-pointer text-muted">
+        Auction comps · PCGS APR ({auctions.length})
+      </summary>
+      <div className="mt-2 overflow-x-auto">
+        <table className="w-full text-left text-xs">
+          <thead className="text-muted">
+            <tr>
+              <th className="font-normal pr-2">Date</th>
+              <th className="font-normal pr-2">House / Sale</th>
+              <th className="font-normal pr-2">Lot</th>
+              <th className="font-normal pr-2 text-right">Price</th>
+              <th className="font-normal pr-2 text-center">CAC</th>
+            </tr>
+          </thead>
+          <tbody>
+            {top.map((a, i) => (
+              <tr key={i} className="border-t border-border/60">
+                <td className="py-1 pr-2 whitespace-nowrap">{fmtAuctionDate(a.date)}</td>
+                <td className="py-1 pr-2 truncate max-w-[180px]" title={a.saleName ?? a.auctioneer ?? ""}>
+                  {a.auctioneer ?? a.saleName ?? "—"}
+                </td>
+                <td className="py-1 pr-2">
+                  {a.url ? (
+                    <a href={a.url} target="_blank" rel="noreferrer" className="underline">
+                      {a.lotNo ?? "lot"}
+                    </a>
+                  ) : (
+                    a.lotNo ?? "—"
+                  )}
+                </td>
+                <td className="py-1 pr-2 text-right tabular-nums">{fmtMoney(a.price)}</td>
+                <td className="py-1 pr-2 text-center">{a.isCac ? "✓" : ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+function fmtAuctionDate(d: string | null): string {
+  if (!d) return "—";
+  const t = Date.parse(d);
+  if (!Number.isFinite(t)) return d.slice(0, 10);
+  const dt = new Date(t);
+  return dt.toLocaleDateString("en-US", { year: "2-digit", month: "short" });
 }
 
 // ---------- Small UI bits ----------

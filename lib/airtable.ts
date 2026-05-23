@@ -114,6 +114,13 @@ export const SLAB_FIELDS = {
   Status: "Status",                 // single select: priced / no-pricing / needs-mapping / error
   VisionConfidence: "Vision Confidence", // number (0..1)
   Notes: "Notes",                   // long text
+  // --- Sprint 2: PCGS APR auction comps ----------------------------------
+  // We store the most-recent sale as two scalar fields so Ben can sort/filter
+  // by it directly, plus a long-text summary of up to ~6 sales for reference.
+  LastSalePrice: "Last Sale $",     // currency (most recent APR price)
+  LastSaleDate: "Last Sale Date",   // date
+  AuctionCount: "Auction Comp Count", // number — how many APR sales we found
+  AuctionComps: "Auction Comps",    // long text — short human-readable list
 } as const;
 
 // ---------- Public API ----------
@@ -211,6 +218,13 @@ export async function commitScan(input: CommitInput): Promise<CommitResult> {
         [SLAB_FIELDS.Status]: r.priced.status,
         [SLAB_FIELDS.VisionConfidence]: s.label_confidence,
         [SLAB_FIELDS.Notes]: r.notesOverride ?? s.notes ?? "",
+
+        // --- Auction comps (PCGS APR) — only populated when we resolved by
+        // cert# and CDN returned sales. Otherwise these stay blank.
+        [SLAB_FIELDS.LastSalePrice]: r.priced.auctions?.[0]?.price ?? null,
+        [SLAB_FIELDS.LastSaleDate]: normalizeAprDate(r.priced.auctions?.[0]?.date) ?? null,
+        [SLAB_FIELDS.AuctionCount]: r.priced.auctions?.length ?? null,
+        [SLAB_FIELDS.AuctionComps]: formatAuctionComps(r.priced.auctions),
       },
     };
   });
@@ -248,6 +262,40 @@ export async function commitScan(input: CommitInput): Promise<CommitResult> {
   );
 
   return { scanRecordId: scanId, slabRecordIds: slabIds };
+}
+
+/**
+ * Coerce a free-form APR date string (e.g. "Mar 2024", "2024-03-15") into a
+ * canonical ISO `YYYY-MM-DD` so Airtable's Date column accepts it. Returns
+ * null when we can't safely parse — better an empty cell than a wrong year.
+ */
+function normalizeAprDate(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const t = Date.parse(input);
+  if (!Number.isFinite(t)) return null;
+  return new Date(t).toISOString().slice(0, 10);
+}
+
+/**
+ * Build a small markdown-ish blob of up to 6 auction comps so Ben can read
+ * them inline in the Airtable record without leaving the row. We keep it
+ * compact (≤6 lines, ≤2KB) — anything beyond that lives in CDN/PCGS APR.
+ */
+function formatAuctionComps(
+  auctions: PricedSlab["auctions"] | null | undefined,
+): string {
+  if (!auctions || auctions.length === 0) return "";
+  const top = auctions.slice(0, 6);
+  return top
+    .map((a) => {
+      const price = a.price != null ? `$${a.price.toLocaleString("en-US")}` : "—";
+      const date = normalizeAprDate(a.date) ?? a.date ?? "—";
+      const where = [a.auctioneer, a.saleName].filter(Boolean).join(" — ") || "—";
+      const lot = a.lotNo ? `#${a.lotNo}` : "";
+      const cac = a.isCac ? " [CAC]" : "";
+      return `${date} · ${price} · ${where} ${lot}${cac}`.trim();
+    })
+    .join("\n");
 }
 
 /** Generate a human-friendly slab name like "1881-S Morgan $1 MS65 (PCGS)". */
