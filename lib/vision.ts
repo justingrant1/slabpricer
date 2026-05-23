@@ -1,9 +1,12 @@
 /**
  * Two-pass Claude 3.5 Sonnet vision pipeline.
  *
- *   Pass 1 — Detector (one call on a 1600px-long-edge whole-tray image):
- *     Ask Claude to find every slab in the photo and return a bounding box
- *     + reading order. NO field extraction.
+ *   Pass 1 — Detector (one call on a 2048px-long-edge whole-tray image):
+ *     Ask Claude to first COUNT the slabs (so it commits before it lists
+ *     boxes — empirically the most reliable way to stop it from forgetting
+ *     a row on 10+ slab trays), then return a bounding box + reading order
+ *     for each one. NO field extraction.
+
  *
  *   Pass 2 — Per-slab extractor (N parallel calls, capped concurrency):
  *     For each detected box, sharp-crops the ORIGINAL full-res buffer to that
@@ -65,13 +68,19 @@ function client(): Anthropic {
 const DETECTOR_TOOL: Anthropic.Tool = {
   name: "report_slabs",
   description:
-    "Report every coin slab visible in the photo with its bounding box in reading order (top-to-bottom, left-to-right).",
+    "Report every coin slab visible in the photo with its bounding box in reading order (top-to-bottom, left-to-right). FIRST set slab_count to the total number of slabs you can see, THEN return exactly that many boxes.",
   input_schema: {
     type: "object",
     additionalProperties: false,
-    required: ["slabs"],
+    required: ["slab_count", "slabs"],
     properties: {
+      slab_count: {
+        type: "integer",
+        description:
+          "Total number of graded coin slabs visible in the photo. Count carefully BEFORE listing boxes — the slabs array length must equal this number.",
+      },
       slabs: {
+
         type: "array",
         items: {
           type: "object",
@@ -108,9 +117,27 @@ const DETECTOR_TOOL: Anthropic.Tool = {
 
 const DETECTOR_SYSTEM = `You are an expert at locating graded coin slabs in dealer photos.
 A "slab" is a tamper-evident plastic holder (PCGS, NGC, ANACS, ICG) containing one coin.
-Your job: locate EVERY slab in the photo. Be thorough — count carefully.
-Return a tight bounding box around each slab's plastic holder, in reading order
-(top to bottom, then left to right). Do NOT extract label text — that's a separate step.`;
+
+Your job has TWO steps:
+
+Step 1 — COUNT. Scan the entire photo, including every row and every corner.
+Count the total number of slabs you see and set "slab_count" to that number.
+Common dealer layouts include 3x3 grids, 3x4 grids, and 2 or 3 rows with a
+longer bottom row. Don't stop at the first row — sweep every row.
+
+Step 2 — LOCATE. Return one entry in the "slabs" array per slab, in reading
+order (top to bottom, then left to right). The slabs array length MUST equal
+slab_count. Each box must be tight around just that one slab's plastic
+holder.
+
+Hard rules:
+- Each slab is a SEPARATE tamper-evident holder. Do NOT merge two adjacent
+  slabs into a single box, even when they're touching. A row with 4 slabs
+  requires 4 boxes for that row.
+- The handwritten asking-price sticker is part of the slab it sits on — do
+  not list it as its own slab.
+- Do NOT extract label text — that is a separate step.`;
+
 
 interface DetectorBox {
   index: number;
@@ -120,8 +147,10 @@ interface DetectorBox {
 
 async function detectSlabs(downscaledDataUrl: string): Promise<{
   boxes: DetectorBox[];
+  reportedCount: number | null;
   global_notes: string | null;
 }> {
+
   const { mediaType, base64 } = splitDataUrl(downscaledDataUrl);
 
   const resp = await client().messages.create({
@@ -140,7 +169,7 @@ async function detectSlabs(downscaledDataUrl: string): Promise<{
           },
           {
             type: "text",
-            text: "Find every graded coin slab in this photo. Return one entry per slab in reading order with a tight bounding box.",
+            text: "Step 1: count every graded coin slab in this photo and set slab_count to that integer. Step 2: return exactly slab_count boxes, one per slab, in reading order (top to bottom, then left to right). The slabs array length must equal slab_count — double-check before submitting.",
           },
         ],
       },
@@ -152,10 +181,13 @@ async function detectSlabs(downscaledDataUrl: string): Promise<{
     | undefined;
   if (!block) throw new Error("Detector: model did not return a tool_use block");
   const input = block.input as {
+    slab_count?: number;
     slabs?: DetectorBox[];
     global_notes?: string | null;
   };
   const raw = input.slabs ?? [];
+  const reportedCount =
+    typeof input.slab_count === "number" ? input.slab_count : null;
 
   const boxes: DetectorBox[] = raw
     .map((b, i) => ({
@@ -167,9 +199,11 @@ async function detectSlabs(downscaledDataUrl: string): Promise<{
 
   return {
     boxes,
+    reportedCount,
     global_notes: input.global_notes ?? null,
   };
 }
+
 
 // ---------- Pass 2: per-slab extractor ----------
 
@@ -352,12 +386,31 @@ export async function extractSlabsFromImage(
   }
 
   // ---- Pass 1: locate every slab ----
-  const { boxes, global_notes } = await detectSlabs(detectorDataUrl);
-  console.log(`[vision] detector found ${boxes.length} slab(s)`);
+  const { boxes, reportedCount, global_notes: detectorNotes } =
+    await detectSlabs(detectorDataUrl);
+  console.log(
+    `[vision] detector found ${boxes.length} slab(s)` +
+      (reportedCount !== null ? ` (model reported ${reportedCount})` : ""),
+  );
+
+  // If the model said it saw N slabs but only returned M boxes, surface that
+  // so Ben knows to eyeball the source image — boxes.length is authoritative
+  // for downstream, but the mismatch is a strong "look here" signal.
+  let global_notes = detectorNotes;
+  if (
+    reportedCount !== null &&
+    reportedCount > 0 &&
+    reportedCount !== boxes.length
+  ) {
+    const warn = `⚠️ Detector reported ${reportedCount} slab(s) but only returned ${boxes.length} box(es). One or more may be missing — check the source image.`;
+    console.warn(`[vision] ${warn}`);
+    global_notes = global_notes ? `${warn}\n${global_notes}` : warn;
+  }
 
   if (boxes.length === 0) {
     return { slabs: [], global_notes, total_slabs_detected: 0 };
   }
+
 
   // ---- Pass 2: extract fields per slab, bounded concurrency ----
   const slabs = await mapWithConcurrency(boxes, 4, async (box) => {

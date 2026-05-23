@@ -18,7 +18,10 @@ export interface Thumb {
   height: number;
 }
 
-const MAX_VISION_SIDE = 1600;      // px — used for the detector pass (whole tray)
+const MAX_VISION_SIDE = 2048;      // px — used for the detector pass (whole tray).
+                                   // Bumped from 1600 → 2048 so the detector can
+                                   // separate adjacent slabs in dense 10+ slab trays.
+
 const PER_SLAB_VISION_SIDE = 1280; // px — long edge of a cropped single-slab vision image
 const THUMB_SIDE = 480;            // px — long edge of slab thumbnail
 
