@@ -145,14 +145,24 @@ lib/
   vision.ts       Claude two-pass pipeline (the core of the app)
   imageCrop.ts    sharp helpers (resize / crop / re-encode)
   cdn.ts          typed CDN v2 client
+  cdnCatalog.ts   catalog-walk Gsid resolver (fallback when no PCGS#)
   pcgs.ts         typed PCGS public API client
-  lookup.ts       orchestrate vision row → CDN price
+  lookup.ts       orchestrate vision row → CDN price (PCGS# → catalog walk)
   airtable.ts     Scans + Slabs writers (read-modify-write)
   scanStore.ts    KV-backed session store with mem fallback
   auth.ts         HMAC-signed cookie session
 
+data/
+  cdn-node-map.json   hand-curated denomination → CDN node id map
+
+scripts/
+  cdn-build-node-map.ts  crawler to regenerate the node map
+  cdn-smoke.ts           live CDN sanity check
+  provision-airtable.md  Airtable base provisioning notes
+
 middleware.ts     auth gate for everything except /login + /api/login
 ```
+
 
 ---
 
@@ -220,27 +230,87 @@ two slabs, or hallucinate fields.
 
 - **Auth:** two custom headers (`X-ApiKey`, `X-Token`).
 - **Primary endpoint:** `POST /GetPricingRequest` with body
-  `{PcgsNumber, Grade, Advanced: true}` (or `Gsid + Grade` as a
-  fallback path when a PCGS coin number isn't on the label).
+  `{PcgsNumber, Grade, Advanced: true}` or `{Gsid, Grade, Advanced: true}`.
 - Response is a Greysheet `Data[]` array. `summarisePricing()`
   collapses the response into a typed `SlabPricingSummary` with
-  `{bid, ask, cdnBid, cdnAsk, cacBid, cacAsk, lastUpdated, link}`,
-  preferring the CAC pricing when the slab has a CAC sticker (we read
-  this from the vision pass).
-- `lib/lookup.ts` orchestrates one slab → one priced row, computing:
-  - `spreadDollars = handwritten_ask_price - cdnBid`
-  - `spreadPercent = spread / cdnBid`
+  `{bid, ask, cdnBid, cdnAsk, cacBid, cacAsk, lastUpdated, link,
+  approximateGrade, requestedGrade, gradeLabel, ...}`, preferring CAC
+  pricing when the slab has a CAC sticker (we read this from the
+  vision pass).
 - All slabs are priced in parallel after the vision pass returns.
 
 `scripts/cdn-smoke.ts` is a CLI sanity check against the live CDN API.
 
-### Failure modes (deliberately distinct statuses)
+### 5.1 Resolution chain (`lib/lookup.ts`)
+
+A surprising number of dealer-photo slabs — especially NGC, ANACS, and
+ICG holders — do **not** print a PCGS coin number on the label. CDN's
+pricing endpoint can take either a PCGS# or a Greysheet `Gsid`, so we
+chain strategies in order until one yields a price:
+
+1. **PCGS# lookup** — if the vision pass returned a `pcgs_number`,
+   hit `GetPricingRequest` keyed by `PcgsNumber + Grade`. If the exact
+   grade has no row, retry once with a ±2 grade window and let
+   `summarisePricing` pick the nearest published grade (flagged as
+   `approximateGrade = true` so the UI can warn Ben).
+2. **Catalog walk** (`lib/cdnCatalog.ts`) — if there's no PCGS# or it
+   didn't match, map the vision's `denomination` (free text like
+   "Morgan Dollar" or "1c") to a CDN parent node id via a curated
+   `data/cdn-node-map.json`. Then `GetCollectibleByNodeRequest` lists
+   every collectible under that series and we score each candidate on
+   `year`, `MintMark`, `Variety`, and `Designation` to pick a `Gsid`.
+   The match has to clear a minimum score (year match required) or we
+   give up to avoid false positives.
+3. **Manual override** — if neither path produced a `Gsid`, the row is
+   marked `needs-mapping` and the review UI exposes a 🔍 button that
+   opens a pre-filled `greysheet.com/search?q=…` in a new tab. Ben
+   pastes the Gsid back into a small input and the row re-prices.
+
+Each priced row carries a `resolvedVia` flag (`"pcgs"`,
+`"catalog-walk"`, or `"manual-gsid"`) so the UI can show how the
+match was made, and `spreadDollars / spreadPercent` are computed
+relative to the dealer's handwritten asking price.
+
+### 5.2 The node map
+
+`data/cdn-node-map.json` is a hand-curated seed covering ~22 of the
+most common U.S. series Ben sees: Lincoln (wheat / memorial / shield)
+cents, Indian-head cents, Buffalo / Jefferson nickels, Mercury /
+Roosevelt dimes, Washington quarters, Walking Liberty / Franklin /
+Kennedy halves, Morgan / Peace / Eisenhower dollars, $1–$20 classic
+gold, and American Silver / Gold Eagles.
+
+Each entry is:
+
+```jsonc
+{
+  "series": "Morgan Dollar",
+  "aliases": ["$1", "morgan dollar", "morgan", "silver dollar morgan"],
+  "nodeId": 36,
+  "yearMin": 1878,
+  "yearMax": 1921
+}
+```
+
+Aliases are matched case- and punctuation-insensitively against the
+free-text `denomination` the vision pass emits. `yearMin`/`yearMax`
+disambiguate cases where two series share a denomination (Indian-head
+cents vs. wheat cents vs. memorial cents).
+
+If CDN reorganizes its catalog,
+`pnpm tsx scripts/cdn-build-node-map.ts > data/cdn-node-map.json`
+re-walks the U.S. coins root and regenerates the file; you then
+re-annotate `aliases` and year windows by hand.
+
+### 5.3 Failure modes (deliberately distinct statuses)
 - `priced` — got real numbers.
-- `no-pricing` — CDN knows the coin but has no row for that grade.
-- `needs-mapping` — no PCGS# on the label; Ben must map manually
-  by pasting a Greysheet Gsid in the review UI.
+- `no-pricing` — CDN found the coin but has no row even after a ±2
+  grade widening.
+- `needs-mapping` — neither PCGS# nor catalog walk produced a `Gsid`;
+  Ben must paste one from the Greysheet quick-search.
 - `no-credentials` — env not configured (used during onboarding).
 - `error` — network or API failure; original error message surfaced.
+
 
 ---
 
@@ -314,8 +384,17 @@ History page (`/history`) reads directly from the Scans table.
   slab and an inline crop thumbnail (served from
   `/api/scan/[id]/thumb/[index]`). Every editable field re-fires a
   `PATCH /api/scan/[id]/rows/[index]` which re-prices that row in
-  isolation. Spread is rendered green/red. A "Commit all to Airtable"
-  button finalises the scan.
+  isolation. Spread is rendered green/red. Each card also surfaces:
+  - an **"≈ approximate — nearest published grade is X"** warning
+    when CDN had no row for the exact grade and we fell back to the
+    nearest one,
+  - a **"Matched via CDN catalog walk"** subtitle when the Gsid
+    fallback fired (vs. a direct PCGS# hit), and
+  - a 🔍 button next to the manual GSID input that opens a pre-filled
+    `greysheet.com/search?q=…` in a new tab so Ben can quickly find
+    the right Gsid for `needs-mapping` rows.
+  A "Commit all to Airtable" button finalises the scan.
+
 - **`SlabInHandCard.tsx`** — barcode scanner + cert # entry, single
   result panel using the same row design as the bulk table.
 - **`HomeTabs.tsx`** — tab switcher between the two intake modes.
@@ -416,7 +495,37 @@ no longer used by the active code path.
 - `README.md` — setup + Vercel deploy instructions.
 - `cpg-api-v2-documentation.md` — vendor docs for CDN, included so the
   client code can be re-derived if the upstream docs disappear.
+- `pcgs-api-instructions.md` — vendor docs for the PCGS Public API.
+- `data/cdn-node-map.json` — denomination → CDN node id map driving
+  the catalog-walk fallback.
 - `scripts/cdn-smoke.ts` — live CDN sanity check.
+- `scripts/cdn-build-node-map.ts` — regenerate `cdn-node-map.json`
+  by crawling CDN's U.S. coins tree.
 - `scripts/provision-airtable.md` — how the Airtable base was
   provisioned (via MCP) plus a manual fallback.
 - `TECHNICAL_OVERVIEW.md` — this document.
+
+---
+
+## 13. Changelog (recent notable changes)
+
+- **Catalog-walk Gsid fallback** (`lib/cdnCatalog.ts`,
+  `data/cdn-node-map.json`). Dealer-photo slabs without a PCGS coin
+  number on the label (most NGC / ANACS / ICG holders) now auto-
+  resolve to a Greysheet Gsid by scoring candidates under a curated
+  series node. Adds a `resolvedVia` flag on every priced row.
+- **±2 grade-window retry in `lib/lookup.ts`.** If `GetPricingRequest`
+  has no row at the exact grade, we retry once with a wider window
+  and let `summarisePricing` pick the nearest published grade
+  (surfaced in the UI as "≈ approximate").
+- **Greysheet quick-search button** in `ReviewClient.tsx` for
+  `needs-mapping` rows — opens a pre-filled `greysheet.com/search`
+  in a new tab so Ben can copy the right Gsid back in.
+- **Two-pass Claude Sonnet 4.6 vision pipeline** replacing the
+  single-call GPT-4o approach (see §4).
+- **Vercel KV scan store** with in-memory fallback so `/scan/[id]`
+  survives the cross-lambda hop in production.
+- **Client-side JPEG compression** in `UploadCard.tsx` to stay under
+  Vercel's 4.5MB request-body cap.
+
+
