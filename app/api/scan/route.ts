@@ -40,14 +40,16 @@ export async function POST(req: Request) {
 
   const sourceBuf = Buffer.from(await file.arrayBuffer());
 
-  // 1. Resize / normalize for vision
+  // 1. Build a downscaled image for the detector pass (whole-tray view).
+  //    The per-slab pass crops from the ORIGINAL full-res buffer for max OCR fidelity.
   const prepared = await resizeForVision(sourceBuf);
 
-  // 2. Vision extraction
+  // 2. Two-pass vision extraction (detector → per-slab Claude calls)
   let vision;
   try {
-    vision = await extractSlabsFromImage(prepared.dataUrl);
+    vision = await extractSlabsFromImage(sourceBuf, prepared.dataUrl);
   } catch (e: any) {
+    console.error("[scan] vision failed", e);
     return NextResponse.json({ error: `Vision failed: ${e?.message ?? e}` }, { status: 502 });
   }
 

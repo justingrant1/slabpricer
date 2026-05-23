@@ -18,8 +18,9 @@ export interface Thumb {
   height: number;
 }
 
-const MAX_VISION_SIDE = 1600; // px — plenty for slab OCR, well under model limits
-const THUMB_SIDE = 480;       // px — long edge of slab thumbnail
+const MAX_VISION_SIDE = 1600;      // px — used for the detector pass (whole tray)
+const PER_SLAB_VISION_SIDE = 1280; // px — long edge of a cropped single-slab vision image
+const THUMB_SIDE = 480;            // px — long edge of slab thumbnail
 
 /** Crop a single slab thumbnail out of the master photo. */
 export async function cropSlabThumb(
@@ -51,6 +52,68 @@ export async function cropSlabThumb(
     dataUrl: `data:image/jpeg;base64,${b64}`,
     width: out.width ?? 0,
     height: out.height ?? 0,
+  };
+}
+
+/**
+ * Crop a single slab out of the FULL-RES source buffer with optional padding,
+ * then resize for vision OCR (longest side ~1280px, high quality JPEG).
+ *
+ * @param sourceBuf  the ORIGINAL, full-resolution image buffer
+ * @param cropBox    [x, y, w, h] in 0..1 fractions of the source image
+ * @param padPct     additional padding around the box (fraction of source dims,
+ *                   default 0.04 = 4%). Helps capture CAC stickers / price tags
+ *                   that sit on the edge of the slab.
+ */
+export async function cropForVision(
+  sourceBuf: Buffer,
+  cropBox: [number, number, number, number],
+  padPct = 0.04,
+): Promise<{ buf: Buffer; dataUrl: string; mediaType: "image/jpeg" }> {
+  const img = sharp(sourceBuf);
+  const meta = await img.metadata();
+  const W = meta.width ?? 0;
+  const H = meta.height ?? 0;
+  if (!W || !H) throw new Error("cropForVision: could not read image dimensions");
+
+  const [nx, ny, nw, nh] = cropBox;
+  const padX = padPct * W;
+  const padY = padPct * H;
+
+  let left = Math.floor(nx * W - padX);
+  let top = Math.floor(ny * H - padY);
+  let width = Math.ceil(nw * W + padX * 2);
+  let height = Math.ceil(nh * H + padY * 2);
+
+  // Clamp
+  if (left < 0) {
+    width += left;
+    left = 0;
+  }
+  if (top < 0) {
+    height += top;
+    top = 0;
+  }
+  if (left + width > W) width = W - left;
+  if (top + height > H) height = H - top;
+  width = Math.max(1, width);
+  height = Math.max(1, height);
+
+  const out = await sharp(sourceBuf)
+    .extract({ left, top, width, height })
+    .resize({
+      width: width >= height ? PER_SLAB_VISION_SIDE : undefined,
+      height: height > width ? PER_SLAB_VISION_SIDE : undefined,
+      fit: "inside",
+      withoutEnlargement: true,
+    })
+    .jpeg({ quality: 92 })
+    .toBuffer();
+
+  return {
+    buf: out,
+    dataUrl: `data:image/jpeg;base64,${out.toString("base64")}`,
+    mediaType: "image/jpeg",
   };
 }
 

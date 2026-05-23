@@ -17,11 +17,20 @@ function optional(name: string, fallback = ""): string {
 }
 
 export const env = {
-  // OpenAI
+  // OpenAI (legacy — only used if Anthropic key is missing)
   get OPENAI_API_KEY() {
     return required("OPENAI_API_KEY");
   },
   OPENAI_VISION_MODEL: optional("OPENAI_VISION_MODEL", "gpt-4o"),
+
+  // Anthropic (Claude 3.5 Sonnet — primary vision provider)
+  get ANTHROPIC_API_KEY() {
+    return required("ANTHROPIC_API_KEY");
+  },
+  ANTHROPIC_VISION_MODEL: optional(
+    "ANTHROPIC_VISION_MODEL",
+    "claude-3-5-sonnet-20241022",
+  ),
 
   // CDN
   CDN_BASE_URL: optional("CDN_BASE_URL", "https://cpgpublicapiv2beta.greysheet.com"),
@@ -70,4 +79,9 @@ export function hasAirtableCreds(): boolean {
 /** True if OpenAI is configured. */
 export function hasOpenAiCreds(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
+}
+
+/** True if Anthropic Claude vision is configured. */
+export function hasAnthropicCreds(): boolean {
+  return Boolean(process.env.ANTHROPIC_API_KEY);
 }
