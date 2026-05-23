@@ -10,12 +10,13 @@
     "smoke:cdn": "tsx scripts/cdn-smoke.ts"
   },
   "dependencies": {
+    "@vercel/kv": "^3.0.0",
     "@zxing/browser": "^0.1.5",
     "@zxing/library": "^0.21.3",
     "airtable": "^0.12.2",
-    "dotenv": "^16.4.5",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
+    "dotenv": "^16.4.5",
     "lucide-react": "^0.456.0",
     "next": "14.2.18",
     "openai": "^4.73.0",

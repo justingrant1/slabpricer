@@ -55,7 +55,7 @@ export async function POST(req: Request) {
   const rows = await priceAll(vision.slabs);
 
   // 4. Stash the session (keep the resized image — small enough to live in memory)
-  const session = createScan({
+  const session = await createScan({
     sourceDataUrl: prepared.dataUrl,
     sourceMimeType: "image/jpeg",
     sourceFilename: file.name || "scan.jpg",

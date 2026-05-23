@@ -42,7 +42,7 @@ interface Body {
 }
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
-  const scan = getScan(params.id);
+  const scan = await getScan(params.id);
   if (!scan) return NextResponse.json({ error: "Scan not found" }, { status: 404 });
 
   const body = (await req.json().catch(() => ({}))) as Body;
@@ -76,7 +76,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       photoDataUrl: scan.sourceDataUrl,
       rows,
     });
-    deleteScan(params.id);
+    await deleteScan(params.id);
     return NextResponse.json(result);
   } catch (e: any) {
     console.error("[commit] Airtable commit failed", e);

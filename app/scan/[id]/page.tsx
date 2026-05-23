@@ -5,8 +5,8 @@ import ReviewClient from "./ReviewClient";
 export const metadata = { title: "Review Scan · Slab Pricer" };
 export const dynamic = "force-dynamic";
 
-export default function ScanReviewPage({ params }: { params: { id: string } }) {
-  const scan = getScan(params.id);
+export default async function ScanReviewPage({ params }: { params: { id: string } }) {
+  const scan = await getScan(params.id);
   if (!scan) notFound();
 
   // Pass everything except the giant sourceDataUrl. The client fetches the

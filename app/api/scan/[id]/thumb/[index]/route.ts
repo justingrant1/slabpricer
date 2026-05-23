@@ -12,7 +12,7 @@ import { cropSlabThumb } from "@/lib/imageCrop";
 export const runtime = "nodejs";
 
 export async function GET(_req: Request, { params }: { params: { id: string; index: string } }) {
-  const scan = getScan(params.id);
+  const scan = await getScan(params.id);
   if (!scan) return new NextResponse("Not found", { status: 404 });
 
   const index = Number(params.index);

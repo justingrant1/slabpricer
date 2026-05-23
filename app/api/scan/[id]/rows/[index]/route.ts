@@ -23,7 +23,7 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string; index: string } },
 ) {
-  const scan = getScan(params.id);
+  const scan = await getScan(params.id);
   if (!scan) return NextResponse.json({ error: "Scan not found" }, { status: 404 });
 
   const index = Number(params.index);
@@ -41,7 +41,7 @@ export async function PATCH(
     ? await priceSlabByGsid(body.slab, body.overrideGsid)
     : await priceSlab(body.slab);
 
-  const next = updateRow(params.id, index, priced);
+  const next = await updateRow(params.id, index, priced);
   if (!next) return NextResponse.json({ error: "Row not found" }, { status: 404 });
 
   return NextResponse.json({ row: priced });

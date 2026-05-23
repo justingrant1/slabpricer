@@ -1,18 +1,29 @@
 /**
- * In-memory store for in-flight scans between the upload and the review page.
+ * Durable scan-session store.
+ *
+ * Backing store:
+ *   - Vercel KV (Upstash Redis) when `KV_REST_API_URL` + `KV_REST_API_TOKEN`
+ *     are present (Vercel auto-injects these once you link a KV store to the
+ *     project).
+ *   - In-memory Map fallback otherwise (local dev without KV configured).
+ *
+ * Why it has to be durable in prod:
+ *   On Vercel each request can hit a *different* serverless lambda instance,
+ *   each with its own JS heap. An in-memory Map "works" only as long as
+ *   subsequent requests happen to land on the same warm instance — which is
+ *   why the review page would 404 sometimes after a successful upload.
  *
  * Why not Airtable for this?
  *   Airtable is the system of record AFTER Ben hits "Commit". The review
- *   screen is editable scratch space and writing every keystroke to
+ *   screen is editable scratch space; writing every keystroke / re-price to
  *   Airtable would be slow and noisy. Once the user commits, we write the
- *   final, edited rows to Airtable and the scan can be purged from memory.
+ *   final, edited rows to Airtable and the scan can be purged.
  *
- * In production on Vercel this gets evicted on cold starts. That's fine —
- * if Ben loses a review session he can re-upload. If we ever need durability
- * (e.g. resumable sessions across devices) we'll swap in Vercel KV here.
+ * Note: every function here is now async. All callers must `await`.
  */
 
 import { randomUUID } from "crypto";
+import { kv } from "@vercel/kv";
 import type { PricedSlab } from "@/lib/lookup";
 import type { VisionResult } from "@/lib/vision";
 
@@ -29,63 +40,96 @@ export interface ScanSession {
   rows: PricedSlab[];
 }
 
-// Module-level singleton — survives across requests within a single warm
-// Lambda/Node process.
-//
-// We attach to `globalThis` so the Map is shared across module instances.
-// In dev, Next.js re-instantiates modules on HMR + can spin up separate
-// module graphs for route handlers vs. RSC renders, which would otherwise
-// give each side its *own* empty Map and break the upload → review handoff.
+const TTL_SECONDS = 60 * 60 * 6; // 6h — long enough for Ben to come back to a review
+
+const HAS_KV = Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+
+// ------------------------------------------------------------------
+// In-memory fallback (local dev, or production without KV configured)
+// ------------------------------------------------------------------
 const GLOBAL_KEY = Symbol.for("ben-app.scan-store");
 type GlobalWithStore = typeof globalThis & {
   [GLOBAL_KEY]?: Map<string, ScanSession>;
 };
 const g = globalThis as GlobalWithStore;
-const SCANS: Map<string, ScanSession> = g[GLOBAL_KEY] ?? new Map();
-g[GLOBAL_KEY] = SCANS;
+const MEM: Map<string, ScanSession> = g[GLOBAL_KEY] ?? new Map();
+g[GLOBAL_KEY] = MEM;
 
-const TTL_MS = 1000 * 60 * 60 * 6; // 6h
-
-function gc() {
+function memGc() {
   const now = Date.now();
-  for (const [id, s] of SCANS) {
-    if (now - s.createdAt > TTL_MS) SCANS.delete(id);
+  for (const [id, s] of MEM) {
+    if (now - s.createdAt > TTL_SECONDS * 1000) MEM.delete(id);
   }
 }
 
-export function createScan(input: Omit<ScanSession, "id" | "createdAt">): ScanSession {
-  gc();
+const kvKey = (id: string) => `scan:${id}`;
+
+// ------------------------------------------------------------------
+// Public API
+// ------------------------------------------------------------------
+
+export async function createScan(
+  input: Omit<ScanSession, "id" | "createdAt">,
+): Promise<ScanSession> {
   const id = randomUUID();
   const session: ScanSession = { id, createdAt: Date.now(), ...input };
-  SCANS.set(id, session);
+  if (HAS_KV) {
+    await kv.set(kvKey(id), session, { ex: TTL_SECONDS });
+  } else {
+    memGc();
+    MEM.set(id, session);
+  }
   return session;
 }
 
-export function getScan(id: string): ScanSession | null {
-  gc();
-  return SCANS.get(id) ?? null;
+export async function getScan(id: string): Promise<ScanSession | null> {
+  if (HAS_KV) {
+    const s = (await kv.get<ScanSession>(kvKey(id))) ?? null;
+    return s;
+  }
+  memGc();
+  return MEM.get(id) ?? null;
 }
 
-export function updateScan(id: string, patch: Partial<ScanSession>): ScanSession | null {
-  const existing = SCANS.get(id);
+export async function updateScan(
+  id: string,
+  patch: Partial<ScanSession>,
+): Promise<ScanSession | null> {
+  const existing = await getScan(id);
   if (!existing) return null;
-  const next = { ...existing, ...patch };
-  SCANS.set(id, next);
+  const next: ScanSession = { ...existing, ...patch };
+  if (HAS_KV) {
+    await kv.set(kvKey(id), next, { ex: TTL_SECONDS });
+  } else {
+    MEM.set(id, next);
+  }
   return next;
 }
 
-export function updateRow(id: string, index: number, row: PricedSlab): ScanSession | null {
-  const existing = SCANS.get(id);
+export async function updateRow(
+  id: string,
+  index: number,
+  row: PricedSlab,
+): Promise<ScanSession | null> {
+  const existing = await getScan(id);
   if (!existing) return null;
   const rows = existing.rows.slice();
   const i = rows.findIndex((r) => r.slab.index === index);
   if (i === -1) return null;
   rows[i] = row;
-  const next = { ...existing, rows };
-  SCANS.set(id, next);
+  const next: ScanSession = { ...existing, rows };
+  if (HAS_KV) {
+    await kv.set(kvKey(id), next, { ex: TTL_SECONDS });
+  } else {
+    MEM.set(id, next);
+  }
   return next;
 }
 
-export function deleteScan(id: string): void {
-  SCANS.delete(id);
+export async function deleteScan(id: string): Promise<void> {
+  if (HAS_KV) {
+    await kv.del(kvKey(id));
+  } else {
+    MEM.delete(id);
+  }
 }

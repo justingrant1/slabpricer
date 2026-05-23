@@ -112,7 +112,7 @@ export async function POST(req: Request) {
     total_slabs_detected: 1,
   };
 
-  const session = createScan({
+  const session = await createScan({
     sourceDataUrl,
     sourceMimeType: "image/jpeg",
     sourceFilename: `${resolvedService.toLowerCase()}-${slab.cert_number ?? "slab"}.jpg`,
