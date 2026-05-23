@@ -29,7 +29,7 @@ export const env = {
   },
   ANTHROPIC_VISION_MODEL: optional(
     "ANTHROPIC_VISION_MODEL",
-    "claude-3-5-sonnet-20241022",
+    "claude-sonnet-4-6",
   ),
 
   // CDN
